@@ -13,6 +13,8 @@ export interface PluginInputs<T extends SupportedEventsU = SupportedEventsU, TU 
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
 
+const userRoleSchema = T.Union([T.Literal("Admin"), T.Literal("Member"), T.Literal("Contributor"), T.String()]);
+
 export const startStopSchema = T.Object({
   timers: T.Object(
     {
@@ -23,10 +25,33 @@ export const startStopSchema = T.Object({
   ),
   miscellaneous: T.Object(
     {
-      maxConcurrentTasks: T.Number(),
       startRequiresWallet: T.Boolean(),
+      maxConcurrentTasks: T.Array(
+        T.Object({
+          role: userRoleSchema,
+          limit: T.Integer(),
+        })
+      ),
     },
-    { default: { maxConcurrentTasks: 3, startRequiresWallet: true } }
+    {
+      default: {
+        maxConcurrentTasks: [
+          {
+            role: "Admin",
+            limit: 20,
+          },
+          {
+            role: "Member",
+            limit: 10,
+          },
+          {
+            role: "Contributor",
+            limit: 2,
+          },
+        ],
+        startRequiresWallet: true,
+      },
+    }
   ),
 });
 

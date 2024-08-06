@@ -1,5 +1,5 @@
 import { Context } from "../types/context";
-import { Issue, ISSUE_TYPE, PullRequest, Review } from "../types/payload";
+import { GitHubIssueSearch, Review } from "../types/payload";
 import { getLinkedPullRequests, GetLinkedResults } from "./get-linked-prs";
 
 export function isParentIssue(body: string) {
@@ -7,20 +7,26 @@ export function isParentIssue(body: string) {
   return body.match(parentPattern);
 }
 
-export async function getAssignedIssues(context: Context, username: string): Promise<Issue[]> {
+export async function getAssignedIssues(context: Context, username: string): Promise<GitHubIssueSearch["items"]> {
   const payload = context.payload;
 
   try {
-    return await context.octokit.paginate(
-      context.octokit.issues.listForRepo,
-      {
-        owner: payload.repository.owner.login,
-        repo: payload.repository.name,
-        state: ISSUE_TYPE.OPEN,
+    return await context.octokit
+      .paginate(context.octokit.search.issuesAndPullRequests, {
+        q: `org:${payload.repository.owner.login} assignee:${username} is:open`,
         per_page: 100,
-      },
-      ({ data: issues }) => issues.filter((issue: Issue) => !issue.pull_request && issue.assignee && issue.assignee.login === username)
-    );
+        order: "desc",
+        sort: "created",
+      })
+      .then((issues) =>
+        issues.filter((issue) => {
+          return (
+            issue.state === "open" &&
+            !issue.pull_request &&
+            (issue.assignee?.login === username || issue.assignees?.some((assignee) => assignee.login === username))
+          );
+        })
+      );
   } catch (err: unknown) {
     context.logger.error("Fetching assigned issues failed!", { error: err as Error });
     return [];
@@ -127,37 +133,28 @@ export async function addAssignees(context: Context, issueNo: number, assignees:
   }
 }
 
-export async function getAllPullRequests(context: Context, state: "open" | "closed" | "all" = "open") {
-  const payload = context.payload;
+export async function getAllPullRequests(context: Context, state: "open" | "closed" | "all" = "open", username: string) {
+  const { payload } = context;
 
   try {
-    return (await context.octokit.paginate(context.octokit.rest.pulls.list, {
-      owner: payload.repository.owner.login,
-      repo: payload.repository.name,
-      state,
+    return (await context.octokit.paginate(context.octokit.search.issuesAndPullRequests, {
+      q: `org:${payload.repository.owner.login} author:${username} state:${state}`,
       per_page: 100,
-    })) as PullRequest[];
+      order: "desc",
+      sort: "created",
+    })) as GitHubIssueSearch["items"];
   } catch (err: unknown) {
     context.logger.error("Fetching all pull requests failed!", { error: err as Error });
     return [];
   }
 }
 
-export async function getAllPullRequestReviews(context: Context, pullNumber: number, format: "raw" | "html" | "text" | "full" = "raw") {
-  const payload = context.payload;
-
-  const owner = payload.repository.owner.login;
-  const repo = payload.repository.name;
-
+export async function getAllPullRequestReviews(context: Context, pullNumber: number, owner: string, repo: string) {
   try {
-    return (await context.octokit.paginate(context.octokit.rest.pulls.listReviews, {
+    return (await context.octokit.paginate(context.octokit.pulls.listReviews, {
       owner,
       repo,
       pull_number: pullNumber,
-      per_page: 100,
-      mediaType: {
-        format,
-      },
     })) as Review[];
   } catch (err: unknown) {
     context.logger.error("Fetching all pull request reviews failed!", { error: err as Error });
@@ -174,7 +171,9 @@ export async function getAvailableOpenedPullRequests(context: Context, username:
 
   for (let i = 0; i < openedPullRequests.length; i++) {
     const openedPullRequest = openedPullRequests[i];
-    const reviews = await getAllPullRequestReviews(context, openedPullRequest.number);
+    const owner = openedPullRequest.html_url.split("/")[3];
+    const repo = openedPullRequest.html_url.split("/")[4];
+    const reviews = await getAllPullRequestReviews(context, openedPullRequest.number, owner, repo);
 
     if (reviews.length > 0) {
       const approvedReviews = reviews.find((review) => review.state === "APPROVED");
@@ -191,8 +190,8 @@ export async function getAvailableOpenedPullRequests(context: Context, username:
 }
 
 async function getOpenedPullRequests(context: Context, username: string): Promise<ReturnType<typeof getAllPullRequests>> {
-  const prs = await getAllPullRequests(context, "open");
-  return prs.filter((pr) => !pr.draft && (pr.user?.login === username || !username));
+  const prs = await getAllPullRequests(context, "open", username);
+  return prs.filter((pr) => pr.pull_request && pr.state === "open");
 }
 
 /**

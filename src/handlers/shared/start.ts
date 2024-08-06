@@ -3,13 +3,14 @@ import { isParentIssue, getAvailableOpenedPullRequests, getAssignedIssues, addAs
 import { calculateDurations } from "../../utils/shared";
 import { checkTaskStale } from "./check-task-stale";
 import { generateAssignmentComment } from "./generate-assignment-comment";
+import { getUserRole } from "./get-user-task-limit-by-role";
 import structuredMetadata from "./structured-metadata";
 import { assignTableComment } from "./table";
 
 export async function start(context: Context, issue: Context["payload"]["issue"], sender: Context["payload"]["sender"]) {
   const { logger, config } = context;
-  const { maxConcurrentTasks } = config.miscellaneous;
   const { taskStaleTimeoutDuration } = config.timers;
+  const maxTask = await getUserRole(context, sender.login);
 
   // is it a child issue?
   if (issue.body && isParentIssue(issue.body)) {
@@ -37,21 +38,19 @@ export async function start(context: Context, issue: Context["payload"]["issue"]
   // check max assigned issues
 
   const openedPullRequests = await getAvailableOpenedPullRequests(context, sender.login);
-  logger.info(`Opened Pull Requests with approved reviews or with no reviews but over 24 hours have passed: ${JSON.stringify(openedPullRequests)}`);
+  logger.info(`Opened Pull Requests with approved reviews or with no reviews but over 24 hours have passed`, {
+    openedPullRequests: openedPullRequests.map((i) => i.html_url),
+  });
 
   const assignedIssues = await getAssignedIssues(context, sender.login);
-  logger.info("Max issue allowed is", { maxConcurrentTasks });
+  logger.info("Max issues allowed is", { limit: maxTask.limit, assigned: assignedIssues.length });
 
   // check for max and enforce max
 
-  if (assignedIssues.length - openedPullRequests.length >= maxConcurrentTasks) {
-    const log = logger.error("Too many assigned issues, you have reached your max limit", {
-      assignedIssues: assignedIssues.length,
-      openedPullRequests: openedPullRequests.length,
-      maxConcurrentTasks,
-    });
+  if (Math.abs(assignedIssues.length - openedPullRequests.length) >= maxTask.limit) {
+    const log = logger.error("Too many assigned issues, you have reached your max limit")
     await addCommentToIssue(context, log?.logMessage.diff as string);
-    throw new Error(`Too many assigned issues, you have reached your max limit of ${maxConcurrentTasks} issues.`);
+    throw new Error(`Too many assigned issues, you have reached your max limit of ${maxTask.limit} issues.`);
   }
 
   // is it assignable?
