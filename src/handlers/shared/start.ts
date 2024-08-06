@@ -1,12 +1,13 @@
-import { Assignee, Context, ISSUE_TYPE, Label } from "../../types";
+import { Assignee, Context, ISSUE_TYPE, Label, Sender } from "../../types";
 import { isParentIssue, getAvailableOpenedPullRequests, getAssignedIssues, addAssignees, addCommentToIssue } from "../../utils/issue";
 import { calculateDurations } from "../../utils/shared";
 import { checkTaskStale } from "./check-task-stale";
+import { hasUserBeenUnassigned } from "./check-assignments";
 import { generateAssignmentComment } from "./generate-assignment-comment";
 import structuredMetadata from "./structured-metadata";
 import { assignTableComment } from "./table";
 
-export async function start(context: Context, issue: Context["payload"]["issue"], sender: Context["payload"]["sender"]) {
+export async function start(context: Context, issue: Context["payload"]["issue"], sender: Sender) {
   const { logger, config } = context;
   const { maxConcurrentTasks } = config.miscellaneous;
   const { taskStaleTimeoutDuration } = config.timers;
@@ -19,6 +20,14 @@ export async function start(context: Context, issue: Context["payload"]["issue"]
     );
     logger.error(`Skipping '/start' since the issue is a parent issue`);
     throw new Error("Issue is a parent issue");
+  }
+
+  const hasBeenPreviouslyUnassigned = await hasUserBeenUnassigned(context);
+
+  if (hasBeenPreviouslyUnassigned) {
+    const log = logger.error("You were previously unassigned from this task. You cannot reassign yourself.", { sender });
+    await addCommentToIssue(context, log?.logMessage.diff as string);
+    throw new Error("User was previously unassigned from this task");
   }
 
   let commitHash: string | null = null;
@@ -37,14 +46,16 @@ export async function start(context: Context, issue: Context["payload"]["issue"]
   // check max assigned issues
 
   const openedPullRequests = await getAvailableOpenedPullRequests(context, sender.login);
-  logger.info(`Opened Pull Requests with approved reviews or with no reviews but over 24 hours have passed: ${JSON.stringify(openedPullRequests)}`);
+  logger.info(`Opened Pull Requests with approved reviews or with no reviews but over 24 hours have passed: `, {
+    openedPullRequests: openedPullRequests.map((p) => p.html_url),
+  });
 
   const assignedIssues = await getAssignedIssues(context, sender.login);
-  logger.info("Max issue allowed is", { maxConcurrentTasks });
+  logger.info("Max issue allowed is", { maxConcurrentTasks, assignedIssues: assignedIssues.map((i) => i.html_url) });
 
   // check for max and enforce max
 
-  if (assignedIssues.length - openedPullRequests.length >= maxConcurrentTasks) {
+  if (Math.abs(assignedIssues.length - openedPullRequests.length) >= maxConcurrentTasks) {
     const log = logger.error("Too many assigned issues, you have reached your max limit", {
       assignedIssues: assignedIssues.length,
       openedPullRequests: openedPullRequests.length,
@@ -82,15 +93,18 @@ export async function start(context: Context, issue: Context["payload"]["issue"]
 
   const duration: number = calculateDurations(labels).shift() ?? 0;
 
-  const { id, login } = sender;
-  const logMessage = logger.info("Task assigned successfully", { duration, priceLabel, revision: commitHash?.substring(0, 7) });
-
-  const assignmentComment = await generateAssignmentComment(context, issue.created_at, issue.number, id, duration);
+  const assignmentComment = await generateAssignmentComment(context, issue.created_at, issue.number, sender.id, duration);
+  const logMessage = logger.info("Task assigned successfully", {
+    taskDeadline: assignmentComment.deadline,
+    taskAssignees: [...assignees.map((a) => a?.login), sender.id],
+    priceLabel,
+    revision: commitHash?.substring(0, 7),
+  });
   const metadata = structuredMetadata.create("Assignment", logMessage);
 
   // add assignee
-  if (!assignees.map((i: Partial<Assignee>) => i?.login).includes(login)) {
-    await addAssignees(context, issue.number, [login]);
+  if (!assignees.map((i: Partial<Assignee>) => i?.login).includes(sender.login)) {
+    await addAssignees(context, issue.number, [sender.login]);
   }
 
   const isTaskStale = checkTaskStale(taskStaleTimeoutDuration, issue.created_at);

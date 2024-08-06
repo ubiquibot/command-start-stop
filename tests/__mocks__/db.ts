@@ -77,6 +77,7 @@ export const db = factory({
     body: nullable(String),
     repo: String,
     owner: String,
+    pull_request: Object,
     author: nullable({
       avatar_url: String,
       email: nullable(String),
@@ -132,7 +133,12 @@ export const db = factory({
   },
   event: {
     id: primaryKey(Number),
-    actor: Object,
+    actor: {
+      id: Number,
+      type: String,
+      login: String,
+      name: nullable(String),
+    },
     owner: String,
     repo: String,
     issue_number: Number,
@@ -140,6 +146,9 @@ export const db = factory({
     commit_id: nullable(String),
     commit_url: String,
     created_at: Date,
+    assignee: {
+      login: String,
+    },
     source: nullable({
       issue: {
         number: Number,

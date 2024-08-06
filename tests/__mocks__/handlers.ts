@@ -47,16 +47,14 @@ export const handlers = [
   http.get("https://api.github.com/repos/:owner/:repo/pulls", ({ params: { owner, repo } }: { params: { owner: string; repo: string } }) =>
     HttpResponse.json(db.pull.findMany({ where: { owner: { equals: owner }, repo: { equals: repo } } }))
   ),
-  // list reviews for a pull request
-  http.get("https://api.github.com/repos/:owner/:repo/pulls/:pull_number/reviews", ({ params: { owner, repo, pull_number: pullNumber } }) =>
-    HttpResponse.json(
-      db.review.findMany({
-        where: { owner: { equals: owner as string }, repo: { equals: repo as string }, pull_number: { equals: Number(pullNumber) } },
-      })
-    )
-  ),
   // list events for an issue timeline
-  http.get("https://api.github.com/repos/:owner/:repo/issues/:issue_number/timeline", () => HttpResponse.json(db.event.getAll())),
+  http.get("https://api.github.com/repos/:owner/:repo/issues/:issue_number/timeline", ({ params: { owner, repo, issue_number: issueNumber } }) => {
+    return HttpResponse.json(
+      db.event.findMany({
+        where: { owner: { equals: owner as string }, repo: { equals: repo as string }, issue_number: { equals: Number(issueNumber) } },
+      })
+    );
+  }),
   // update a pull request
   http.patch("https://api.github.com/repos/:owner/:repo/pulls/:pull_number", ({ params: { owner, repo, pull_number: pullNumber } }) =>
     HttpResponse.json({ owner, repo, pullNumber })
@@ -96,15 +94,19 @@ export const handlers = [
   // get commit hash
   http.get("https://api.github.com/repos/:owner/:repo/commits", () => HttpResponse.json({ sha: "commitHash" })),
   // list all pull request reviews
-  http.get("https://api.github.com/repos/:owner/:repo/pulls/:pull_number/reviews", ({ params: { owner, repo, pull_number: pullNumber } }) =>
-    HttpResponse.json(
-      db.review.findMany({
-        where: { owner: { equals: owner as string }, repo: { equals: repo as string }, pull_number: { equals: Number(pullNumber) } },
-      })
-    )
-  ),
+  http.get("https://api.github.com/repos/:owner/:repo/pulls/:pull_number/reviews", () => HttpResponse.json(db.review.getAll())),
   // remove assignee from an issue
   http.delete("https://api.github.com/repos/:owner/:repo/issues/:issue_number/assignees", ({ params: { owner, repo, issue_number: issueNumber } }) =>
     HttpResponse.json({ owner, repo, issueNumber })
   ),
+  http.get("https://api.github.com/search/issues", ({ request }) => {
+    const params = new URL(request.url).searchParams;
+    const query = params.get("q");
+    const hasAssignee = query?.includes("assignee");
+    if (hasAssignee) {
+      return HttpResponse.json(db.issue.getAll());
+    } else {
+      return HttpResponse.json(db.pull.getAll());
+    }
+  }),
 ];

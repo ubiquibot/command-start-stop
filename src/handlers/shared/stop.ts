@@ -1,7 +1,7 @@
-import { Assignee, Context } from "../../types";
+import { Assignee, Context, Sender } from "../../types";
 import { addCommentToIssue, closePullRequestForAnIssue } from "../../utils/issue";
 
-export async function stop(context: Context, issue: Context["payload"]["issue"], sender: Context["payload"]["sender"], repo: Context["payload"]["repository"]) {
+export async function stop(context: Context, issue: Context["payload"]["issue"], sender: Sender, repo: Context["payload"]["repository"]) {
   const { logger } = context;
   const issueNumber = issue.number;
 

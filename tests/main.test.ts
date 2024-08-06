@@ -13,17 +13,10 @@ import { Logs, cleanLogString } from "@ubiquity-dao/ubiquibot-logger";
 dotenv.config();
 
 type Issue = Context["payload"]["issue"];
-type Sender = Context["payload"]["sender"];
+type PayloadSender = Context["payload"]["sender"];
 
 const octokit = jest.requireActual("@octokit/rest");
 const TEST_REPO = "ubiquity/test-repo";
-
-const url = process.env.SUPABASE_URL;
-const key = process.env.SUPABASE_KEY;
-
-if (!url || !key) {
-  throw new Error("Supabase URL and Key are required");
-}
 
 beforeAll(() => {
   server.listen();
@@ -36,31 +29,33 @@ afterAll(() => server.close());
 
 describe("User start/stop", () => {
   beforeEach(async () => {
+    jest.clearAllMocks();
+    jest.resetModules();
     await setupTests();
   });
 
   test("User can start an issue", async () => {
     const issue = db.issue.findFirst({ where: { id: { equals: 1 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
+    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as PayloadSender;
 
     const context = createContext(issue, sender);
 
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
+    context.adapters = createAdapters(getSupabase(), context);
 
-    const { output } = await userStartStop(context as unknown as Context);
+    const { output } = await userStartStop(context);
 
     expect(output).toEqual("Task assigned successfully");
   });
 
   test("User can stop an issue", async () => {
     const issue = db.issue.findFirst({ where: { id: { equals: 2 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 2 } } }) as unknown as Sender;
+    const sender = db.users.findFirst({ where: { id: { equals: 2 } } }) as unknown as PayloadSender;
 
     const context = createContext(issue, sender, "/stop");
 
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
+    context.adapters = createAdapters(getSupabase(), context);
 
-    const { output } = await userStartStop(context as unknown as Context);
+    const { output } = await userStartStop(context);
 
     expect(output).toEqual("Task unassigned successfully");
   });
@@ -68,12 +63,12 @@ describe("User start/stop", () => {
   test("Stopping an issue should close the author's linked PR", async () => {
     const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
     const issue = db.issue.findFirst({ where: { id: { equals: 2 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 2 } } }) as unknown as Sender;
+    const sender = db.users.findFirst({ where: { id: { equals: 2 } } }) as unknown as PayloadSender;
     const context = createContext(issue, sender, "/stop");
 
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
+    context.adapters = createAdapters(getSupabase(), context);
 
-    const { output } = await userStartStop(context as unknown as Context);
+    const { output } = await userStartStop(context);
 
     expect(output).toEqual("Task unassigned successfully");
     const logs = infoSpy.mock.calls.flat();
@@ -87,197 +82,125 @@ describe("User start/stop", () => {
 
   test("User can't stop an issue they're not assigned to", async () => {
     const issue = db.issue.findFirst({ where: { id: { equals: 2 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
+    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as PayloadSender;
 
     const context = createContext(issue, sender, "/stop");
 
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
+    context.adapters = createAdapters(getSupabase(), context);
 
-    const output = await userStartStop(context as unknown as Context);
+    const output = await userStartStop(context);
 
     expect(output).toEqual({ output: "You are not assigned to this task" });
   });
 
   test("User can't stop an issue without assignees", async () => {
     const issue = db.issue.findFirst({ where: { id: { equals: 6 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
+    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as PayloadSender;
 
     const context = createContext(issue, sender, "/stop");
 
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
+    context.adapters = createAdapters(getSupabase(), context);
 
-    const output = await userStartStop(context as unknown as Context);
+    const output = await userStartStop(context);
 
     expect(output).toEqual({ output: "You are not assigned to this task" });
   });
 
   test("User can't start an issue that's already assigned", async () => {
     const issue = db.issue.findFirst({ where: { id: { equals: 2 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
+    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as PayloadSender;
 
     const context = createContext(issue, sender, "/start");
 
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
+    context.adapters = createAdapters(getSupabase(), context);
 
-    const err = "Issue is already assigned";
-
-    try {
-      await userStartStop(context as unknown as Context);
-    } catch (error) {
-      if (error instanceof Error) {
-        expect(error.message).toEqual(err);
-      }
-    }
+    await expect(userStartStop(context)).rejects.toThrow("Issue is already assigned");
   });
 
   test("User can't start an issue without a price label", async () => {
     const issue = db.issue.findFirst({ where: { id: { equals: 3 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
+    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as PayloadSender;
 
     const context = createContext(issue, sender);
 
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
+    context.adapters = createAdapters(getSupabase(), context);
 
-    const err = "No price label is set to calculate the duration";
-
-    try {
-      await userStartStop(context as unknown as Context);
-    } catch (error) {
-      if (error instanceof Error) {
-        expect(error.message).toEqual(err);
-      }
-    }
+    await expect(userStartStop(context)).rejects.toThrow("No price label is set to calculate the duration");
   });
 
   test("User can't start an issue without a wallet address", async () => {
     const issue = db.issue.findFirst({ where: { id: { equals: 1 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
+    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as PayloadSender;
 
     const context = createContext(issue, sender);
 
-    context.adapters = createAdapters(getSupabase(false), context as unknown as Context);
-
-    try {
-      await userStartStop(context as unknown as Context);
-    } catch (error) {
-      if (error instanceof Error) {
-        expect(error.message).toEqual("No wallet address found");
-      }
-    }
+    context.adapters = createAdapters(getSupabase(false), context);
+    await expect(userStartStop(context)).rejects.toThrow("No wallet address found");
   });
 
   test("User can't start an issue that's closed", async () => {
     const issue = db.issue.findFirst({ where: { id: { equals: 4 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
+    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as PayloadSender;
 
     const context = createContext(issue, sender);
 
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
-
-    try {
-      await userStartStop(context as unknown as Context);
-    } catch (error) {
-      if (error instanceof Error) {
-        expect(error.message).toEqual("Issue is closed");
-      }
-    }
-  });
-
-  test("User can't start if command is disabled", async () => {
-    const issue = db.issue.findFirst({ where: { id: { equals: 1 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
-
-    const context = createContext(issue, sender, "/start");
-
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
-
-    try {
-      await userStartStop(context as unknown as Context);
-    } catch (error) {
-      if (error instanceof Error) {
-        expect(error.message).toEqual("The '/start' command is disabled for this repository.");
-      }
-    }
-  });
-
-  test("User can't stop if command is disabled", async () => {
-    const issue = db.issue.findFirst({ where: { id: { equals: 1 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
-
-    const context = createContext(issue, sender, "/stop");
-
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
-
-    try {
-      await userStartStop(context as unknown as Context);
-    } catch (error) {
-      if (error instanceof Error) {
-        expect(error.message).toEqual("The '/stop' command is disabled for this repository.");
-      }
-    }
+    context.adapters = createAdapters(getSupabase(), context);
+    await expect(userStartStop(context)).rejects.toThrow("Issue is closed");
   });
 
   test("User can't start an issue that's a parent issue", async () => {
-    const issue = db.issue.findFirst({ where: { id: { equals: 1 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
+    const issue = db.issue.findFirst({ where: { id: { equals: 5 } } }) as unknown as Issue;
+    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as PayloadSender;
 
     const context = createContext(issue, sender, "/start");
 
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
+    context.adapters = createAdapters(getSupabase(), context);
 
-    try {
-      await userStartStop(context as unknown as Context);
-    } catch (error) {
-      if (error instanceof Error) {
-        expect(error.message).toEqual("Issue is a parent issue");
-      }
-    }
+    await expect(userStartStop(context)).rejects.toThrow("Issue is a parent issue");
   });
 
   test("User can't start another issue if they have reached the max limit", async () => {
-    jest.mock("../src/utils/issue", () => ({
-      getAvailableOpenedPullRequests: jest.fn().mockResolvedValue([
-        {
-          number: 1,
-          reviews: [
-            {
-              state: "APPROVED",
-            },
-          ],
-        },
-        {
-          number: 2,
-          reviews: [
-            {
-              state: "APPROVED",
-            },
-          ],
-        },
-        {
-          number: 3,
-          reviews: [
-            {
-              state: "APPROVED",
-            },
-          ],
-        },
-      ]),
-    }));
-
     const issue = db.issue.findFirst({ where: { id: { equals: 1 } } }) as unknown as Issue;
-    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as Sender;
+    const sender = db.users.findFirst({ where: { id: { equals: 2 } } }) as unknown as PayloadSender;
 
     const context = createContext(issue, sender);
+    context.config.miscellaneous.maxConcurrentTasks = 2;
 
-    context.adapters = createAdapters(getSupabase(), context as unknown as Context);
+    context.adapters = createAdapters(getSupabase(), context);
 
-    try {
-      await userStartStop(context as unknown as Context);
-    } catch (error) {
-      if (error instanceof Error) {
-        expect(error.message).toEqual("Too many assigned issues, you have reached your max limit of 3 issues.");
-      }
-    }
+    await expect(userStartStop(context)).rejects.toThrow("Too many assigned issues, you have reached your max limit of 2 issues.");
+  });
+
+  test("User can't start an issue if they have previously been unassigned by an admin", async () => {
+    const issue = db.issue.findFirst({ where: { id: { equals: 2 } } }) as unknown as Issue;
+    const sender = db.users.findFirst({ where: { id: { equals: 2 } } }) as unknown as PayloadSender;
+
+    const context = createContext(issue, sender, "/start");
+    context.adapters = createAdapters(getSupabase(), context);
+
+    await expect(userStartStop(context)).rejects.toThrow("User was previously unassigned from this task");
+  });
+
+  test("Should throw if no APP_ID is set", async () => {
+    const issue = db.issue.findFirst({ where: { id: { equals: 1 } } }) as unknown as Issue;
+    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as PayloadSender;
+
+    const context = createContext(issue, sender, "/start", null);
+
+    context.env.APP_ID = null as unknown as string;
+    context.adapters = createAdapters(getSupabase(), context);
+
+    await expect(userStartStop(context)).rejects.toThrow("Invalid APP_ID");
+  });
+
+  test("Should throw if APP_ID is not a number", async () => {
+    const issue = db.issue.findFirst({ where: { id: { equals: 1 } } }) as unknown as Issue;
+    const sender = db.users.findFirst({ where: { id: { equals: 1 } } }) as unknown as PayloadSender;
+
+    const context = createContext(issue, sender, "/start", "testing-one");
+    context.adapters = createAdapters(getSupabase(), context);
+
+    await expect(userStartStop(context)).rejects.toThrow("Invalid APP_ID");
   });
 });
 
@@ -366,7 +289,7 @@ async function setupTests() {
 
   db.pull.create({
     id: 1,
-    html_url: "",
+    html_url: "https://github.com/ubiquity/test-repo/pull/1",
     number: 1,
     author: {
       id: 2,
@@ -385,7 +308,7 @@ async function setupTests() {
 
   db.pull.create({
     id: 2,
-    html_url: "",
+    html_url: "https://github.com/ubiquity/test-repo/pull/2",
     number: 2,
     author: {
       id: 2,
@@ -404,7 +327,7 @@ async function setupTests() {
 
   db.pull.create({
     id: 3,
-    html_url: "",
+    html_url: "https://github.com/ubiquity/test-repo/pull/3",
     number: 3,
     author: {
       id: 1,
@@ -416,7 +339,6 @@ async function setupTests() {
     },
     body: "Pull request body",
     owner: "ubiquity",
-
     repo: "test-repo",
     state: "open",
     closed_at: null,
@@ -442,6 +364,12 @@ async function setupTests() {
   db.event.create({
     id: 1,
     created_at: new Date().toISOString(),
+    actor: {
+      id: 2,
+      name: "user2",
+      login: "user2",
+      type: "User",
+    },
     commit_id: "123",
     commit_url: "",
     event: CROSS_REFERENCED,
@@ -469,6 +397,12 @@ async function setupTests() {
 
   db.event.create({
     id: 2,
+    actor: {
+      id: 1,
+      name: "ubiquity",
+      login: "ubiquity",
+      type: "User",
+    },
     commit_id: "123",
     commit_url: "",
     created_at: new Date().toISOString(),
@@ -522,9 +456,60 @@ async function setupTests() {
       },
     },
   });
+
+  db.event.create({
+    id: 4,
+    actor: {
+      id: 1,
+      login: "ubiquity",
+      type: "User",
+    },
+    assignee: {
+      login: "user2",
+    },
+    created_at: new Date().toISOString(),
+    event: "assigned",
+    issue_number: 2,
+    owner: "ubiquity",
+    repo: "test-repo",
+  });
+
+  db.event.create({
+    id: 5,
+    actor: {
+      id: 1,
+      login: "ubiquibot[bot]",
+      type: "Bot",
+    },
+    assignee: {
+      login: "user2",
+    },
+    created_at: new Date().toISOString(),
+    event: "assigned",
+    issue_number: 2,
+    owner: "ubiquity",
+    repo: "test-repo",
+  });
+
+  db.event.create({
+    id: 6,
+    actor: {
+      id: 1,
+      login: "ubiquity",
+      type: "User",
+    },
+    assignee: {
+      login: "user2",
+    },
+    created_at: new Date().toISOString(),
+    event: "unassigned",
+    issue_number: 2,
+    owner: "ubiquity",
+    repo: "test-repo",
+  });
 }
 
-function createContext(issue: Record<string, unknown>, sender: Record<string, unknown>, body = "/start") {
+function createContext(issue: Record<string, unknown>, sender: Record<string, unknown>, body = "/start", appId: string | number | null = "1"): Context {
   return {
     adapters: {} as ReturnType<typeof createAdapters>,
     payload: {
@@ -532,7 +517,7 @@ function createContext(issue: Record<string, unknown>, sender: Record<string, un
       sender: sender as unknown as Context["payload"]["sender"],
       repository: db.repo.findFirst({ where: { id: { equals: 1 } } }) as unknown as Context["payload"]["repository"],
       comment: { body } as unknown as Context["payload"]["comment"],
-      action: "created" as string,
+      action: "created",
       installation: { id: 1 } as unknown as Context["payload"]["installation"],
       organization: { login: "ubiquity" } as unknown as Context["payload"]["organization"],
     },
@@ -543,18 +528,16 @@ function createContext(issue: Record<string, unknown>, sender: Record<string, un
         taskStaleTimeoutDuration: 2580000,
       },
       miscellaneous: {
-        maxConcurrentTasks: 3,
-      },
-      labels: {
-        time: ["Time: 1h", "Time: <4 hours", "Time: <1 Day", "Time: <3 Days", "Time: <1 Week"],
-        priority: ["Priority: 1 (Normal)", "Priority: 2 (High)", "Priority: 3 (Critical)"],
+        maxConcurrentTasks: 10,
+        startRequiresWallet: true,
       },
     },
     octokit: new octokit.Octokit(),
     eventName: "issue_comment.created" as SupportedEventsU,
     env: {
-      SUPABASE_KEY: key,
-      SUPABASE_URL: url,
+      SUPABASE_KEY: "key",
+      SUPABASE_URL: "url",
+      APP_ID: appId as string,
     },
   };
 }
