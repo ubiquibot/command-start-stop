@@ -22,7 +22,7 @@ export async function getLinkedPullRequests(context: Context, { owner, repositor
     throw new Error("Issue is not defined");
   }
 
-  const { data: timeline } = (await context.octokit.issues.listEventsForTimeline({
+  const { data: timeline } = (await context.octokit.rest.issues.listEventsForTimeline({
     owner,
     repo: repository,
     issue_number: issue,
@@ -42,7 +42,5 @@ export async function getLinkedPullRequests(context: Context, { owner, repositor
       state: pr.state,
       body: pr.body,
     };
-  })
-    .filter((pr) => pr !== null)
-    .filter((pr) => pr.state === "open") as GetLinkedResults[];
+  }).filter((pr) => pr !== null && pr.state === "open") as GetLinkedResults[];
 }

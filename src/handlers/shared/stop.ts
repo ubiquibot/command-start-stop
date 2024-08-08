@@ -26,16 +26,20 @@ export async function stop(context: Context, issue: Context["payload"]["issue"],
 
   // remove assignee
 
-  await context.octokit.rest.issues.removeAssignees({
-    owner: login,
-    repo: name,
-    issue_number: issueNumber,
-    assignees: [sender.login],
-  });
+  try {
+    await context.octokit.rest.issues.removeAssignees({
+      owner: login,
+      repo: name,
+      issue_number: issueNumber,
+      assignees: [userToUnassign.login],
+    });
+  } catch (err) {
+    throw new Error(`Error while removing ${userToUnassign.login} from the issue: ${err}`);
+  }
 
   const unassignedLog = logger.info("You have been unassigned from the task", {
     issueNumber,
-    user: sender.login,
+    user: userToUnassign.login,
   });
 
   await addCommentToIssue(context, unassignedLog?.logMessage.diff as string);

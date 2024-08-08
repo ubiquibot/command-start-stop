@@ -81,7 +81,7 @@ export const handlers = [
         db.issue.update({
           where: { id: { equals: issue.id } },
           data: {
-            assignees,
+            assignees: [...issue.assignees, ...assignees],
           },
         });
       }
@@ -106,5 +106,18 @@ export const handlers = [
   // remove assignee from an issue
   http.delete("https://api.github.com/repos/:owner/:repo/issues/:issue_number/assignees", ({ params: { owner, repo, issue_number: issueNumber } }) =>
     HttpResponse.json({ owner, repo, issueNumber })
+  ),
+  // search issues
+  http.get("https://api.github.com/search/issues", () => {
+    const issues = [db.issue.findFirst({ where: { number: { equals: 1 } } })];
+    return HttpResponse.json({ items: issues });
+  }),
+  // get issue by number
+  http.get("https://api.github.com/repos/:owner/:repo/issues/:issue_number", ({ params: { owner, repo, issue_number: issueNumber } }) =>
+    HttpResponse.json(
+      db.issue.findFirst({
+        where: { owner: { equals: owner as string }, repo: { equals: repo as string }, number: { equals: Number(issueNumber) } },
+      })
+    )
   ),
 ];

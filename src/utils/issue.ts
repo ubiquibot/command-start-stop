@@ -1,5 +1,5 @@
 import { Context } from "../types/context";
-import { Issue, ISSUE_TYPE, PullRequest, Review } from "../types/payload";
+import { Issue, PullRequest, Review } from "../types/payload";
 import { getLinkedPullRequests, GetLinkedResults } from "./get-linked-prs";
 
 export function isParentIssue(body: string) {
@@ -8,22 +8,14 @@ export function isParentIssue(body: string) {
 }
 
 export async function getAssignedIssues(context: Context, username: string): Promise<Issue[]> {
-  const payload = context.payload;
+  const { payload } = context;
 
   try {
-    return await context.octokit.paginate(
-      context.octokit.issues.listForRepo,
-      {
-        owner: payload.repository.owner.login,
-        repo: payload.repository.name,
-        state: ISSUE_TYPE.OPEN,
-        per_page: 100,
-      },
-      ({ data: issues }) => issues.filter((issue: Issue) => !issue.pull_request && issue.assignee && issue.assignee.login === username)
-    );
+    return (await context.octokit.paginate(context.octokit.rest.search.issuesAndPullRequests, {
+      q: `is:issue is:open assignee:${username} org:${payload.repository.owner.login}`,
+    })) as Issue[];
   } catch (err: unknown) {
-    context.logger.error("Fetching assigned issues failed!", { error: err as Error });
-    return [];
+    throw context.logger.error("Fetching assigned issues failed!", { error: err as Error });
   }
 }
 
@@ -34,14 +26,14 @@ export async function addCommentToIssue(context: Context, message: string | null
 
   const issueNumber = payload.issue.number;
   try {
-    await context.octokit.issues.createComment({
+    await context.octokit.rest.issues.createComment({
       owner: payload.repository.owner.login,
       repo: payload.repository.name,
       issue_number: issueNumber,
       body: comment,
     });
   } catch (err: unknown) {
-    context.logger.error("Adding a comment failed!", { error: err as Error });
+    throw context.logger.error("Adding a comment failed!", { error: err as Error });
   }
 }
 
@@ -57,7 +49,7 @@ export async function closePullRequest(context: Context, results: GetLinkedResul
       state: "closed",
     });
   } catch (err: unknown) {
-    context.logger.error("Closing pull requests failed!", { error: err as Error });
+    throw context.logger.error("Closing pull requests failed!", { error: err as Error });
   }
 }
 
@@ -112,6 +104,37 @@ export async function closePullRequestForAnIssue(context: Context, issueNumber: 
   return logger.info(comment);
 }
 
+async function confirmMultiAssignment(context: Context, issueNumber: number, usernames: string[]) {
+  const { logger, payload, octokit } = context;
+
+  if (usernames.length < 2) {
+    return;
+  }
+
+  const { private: isPrivate } = payload.repository;
+
+  const {
+    data: { assignees },
+  } = await octokit.rest.issues.get({
+    owner: payload.repository.owner.login,
+    repo: payload.repository.name,
+    issue_number: issueNumber,
+  });
+
+  if (!assignees?.length) {
+    const log = logger.error("We detected that this task was not assigned to anyone. Please report this to the maintainers.", { issueNumber, usernames });
+    await addCommentToIssue(context, log?.logMessage.diff as string);
+    throw new Error(log?.logMessage.raw);
+  }
+
+  if (isPrivate && assignees?.length <= 1) {
+    const log = logger.error("This task belongs to a private repo and can only be assigned to one user without an official paid GitHub subscription.", {
+      issueNumber,
+    });
+    await addCommentToIssue(context, log?.logMessage.diff as string);
+  }
+}
+
 export async function addAssignees(context: Context, issueNo: number, assignees: string[]) {
   const payload = context.payload;
 
@@ -125,6 +148,8 @@ export async function addAssignees(context: Context, issueNo: number, assignees:
   } catch (e: unknown) {
     throw context.logger.error("Adding the assignee failed", { assignee: assignees, issueNo, error: e as Error });
   }
+
+  await confirmMultiAssignment(context, issueNo, assignees);
 }
 
 export async function getAllPullRequests(context: Context, state: "open" | "closed" | "all" = "open") {
@@ -138,8 +163,7 @@ export async function getAllPullRequests(context: Context, state: "open" | "clos
       per_page: 100,
     })) as PullRequest[];
   } catch (err: unknown) {
-    context.logger.error("Fetching all pull requests failed!", { error: err as Error });
-    return [];
+    throw context.logger.error("Fetching all pull requests failed!", { error: err as Error });
   }
 }
 
@@ -160,8 +184,7 @@ export async function getAllPullRequestReviews(context: Context, pullNumber: num
       },
     })) as Review[];
   } catch (err: unknown) {
-    context.logger.error("Fetching all pull request reviews failed!", { error: err as Error });
-    return [];
+    throw context.logger.error("Fetching all pull request reviews failed!", { error: err as Error });
   }
 }
 
