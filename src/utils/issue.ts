@@ -5,6 +5,7 @@ import { AssignedIssue, GitHubIssueSearch, PrState, Review } from "../types/payl
 import { AssignedIssueScope, Role } from "../types/plugin-input";
 import { getOpenLinkedPullRequestsForIssue, GetLinkedResults } from "./get-linked-prs";
 import { getAllPullRequestsFallback, getAssignedIssuesFallback } from "./get-pull-requests-fallback";
+import { isReviewerLagged } from "./review-thread-check";
 
 export function isParentIssue(body: string) {
   const parentPattern = /-\s+\[( |x)\]\s+#\d+/;
@@ -273,10 +274,30 @@ async function shouldSkipPullRequest(
 }
 
 /**
+ * Checks whether a pull request is "reviewer-lagged" — meaning the assignee
+ * is the last commenter on all unresolved review threads and has been waiting
+ * beyond the reviewer lag timeout for reviewers to respond.
+ */
+async function isPullRequestReviewerLagged(
+  context: Context,
+  pullRequest: Awaited<ReturnType<typeof getOpenedPullRequestsForUser>>[0],
+  username: string,
+  reviewerLagTimeout: string
+): Promise<boolean> {
+  if (!reviewerLagTimeout) {
+    return false;
+  }
+
+  return isReviewerLagged(context, username, pullRequest.html_url, pullRequest.number, reviewerLagTimeout);
+}
+
+/**
  * Returns all the pull-requests pending approval, which count negatively against the PR author's quota.
+ * Pull requests that are "reviewer-lagged" (assignee has addressed all review threads and is
+ * waiting on reviewers beyond the timeout) do NOT count against the quota.
  */
 export async function getPendingOpenedPullRequests(context: Context, username: string) {
-  const { reviewDelayTolerance } = context.config;
+  const { reviewDelayTolerance, reviewerLagTimeout } = context.config;
   if (!reviewDelayTolerance) return [];
 
   const openedPullRequests = await getOpenedPullRequestsForUser(context, username);
@@ -294,9 +315,27 @@ export async function getPendingOpenedPullRequests(context: Context, username: s
       { owner, repo, issueNumber: openedPullRequest.number },
       reviewDelayTolerance
     );
-    if (!shouldSkipPr) {
-      result.push(openedPullRequest);
+
+    if (shouldSkipPr) {
+      // If the PR should be skipped (already approved or within review delay tolerance),
+      // it doesn't count against the quota regardless
+      continue;
     }
+
+    // Check if this PR is reviewer-lagged — if the assignee has addressed all review
+    // threads and has been waiting beyond the timeout, it shouldn't count against the quota
+    if (reviewerLagTimeout) {
+      const isLagged = await isPullRequestReviewerLagged(context, openedPullRequest, username, reviewerLagTimeout);
+      if (isLagged) {
+        context.logger.info("Pull request is reviewer-lagged, not counting against task limit.", {
+          pullRequest: openedPullRequest.html_url,
+          username,
+        });
+        continue;
+      }
+    }
+
+    result.push(openedPullRequest);
   }
 
   return result;

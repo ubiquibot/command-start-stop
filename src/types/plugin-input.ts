@@ -129,6 +129,12 @@ export const pluginSettingsSchema = T.Object(
       description:
         "When considering a user for a task: if they have existing PRs with no reviews, how long should we wait before 'increasing' their assignable task limit?",
     }),
+    reviewerLagTimeout: T.String({
+      default: "24 Hours",
+      examples: ["12 Hours", "24 Hours", "48 Hours"],
+      description:
+        "When considering a user for a task: if they have existing PRs where they are the last commenter on all unresolved review threads, how long should we wait before considering those PRs as 'reviewer-lagged' and not counting them against the task limit?",
+    }),
     taskStaleTimeoutDuration: T.String({
       default: "30 Days",
       examples: ["1 Day", "5 Days"],
