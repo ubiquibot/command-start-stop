@@ -1,5 +1,6 @@
 import { RestEndpointMethodTypes } from "@octokit/plugin-rest-endpoint-methods";
 import ms from "ms";
+import { QUERY_PULL_REQUEST_REVIEW_THREADS } from "../github-queries";
 import { Context } from "../types/context";
 import { AssignedIssue, GitHubIssueSearch, PrState, Review } from "../types/payload";
 import { AssignedIssueScope, Role } from "../types/plugin-input";
@@ -240,6 +241,79 @@ async function getReviewByUser(context: Context, pullRequest: Awaited<ReturnType
   return latestReviewsByUser;
 }
 
+interface ReviewThreadComment {
+  author?: {
+    login?: string;
+  } | null;
+  createdAt?: string | null;
+}
+
+interface ReviewThread {
+  isResolved?: boolean | null;
+  comments?: {
+    nodes?: (ReviewThreadComment | null)[] | null;
+  } | null;
+}
+
+function getLatestThreadComment(thread: ReviewThread): ReviewThreadComment | null {
+  const comments = thread.comments?.nodes?.filter((comment): comment is ReviewThreadComment => !!comment?.createdAt) ?? [];
+
+  return comments.sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())[0] ?? null;
+}
+
+async function areUnresolvedReviewThreadsWaitingOnReviewer(
+  context: Context,
+  {
+    owner,
+    repo,
+    pullNumber,
+    username,
+    reviewDelayTolerance,
+  }: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    username: string;
+    reviewDelayTolerance: string;
+  }
+) {
+  try {
+    const response = await context.octokit.graphql.paginate<{
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            nodes?: (ReviewThread | null)[] | null;
+          } | null;
+        } | null;
+      } | null;
+    }>(QUERY_PULL_REQUEST_REVIEW_THREADS, {
+      owner,
+      repo,
+      pull_number: pullNumber,
+    });
+    const unresolvedThreads =
+      response.repository?.pullRequest?.reviewThreads?.nodes?.filter((thread): thread is ReviewThread => !!thread && !thread.isResolved) ?? [];
+
+    if (!unresolvedThreads.length) {
+      return true;
+    }
+
+    const tolerance = getTimeValue(reviewDelayTolerance);
+    const normalizedUsername = username.toLowerCase();
+
+    return unresolvedThreads.every((thread) => {
+      const latestComment = getLatestThreadComment(thread);
+      const latestAuthor = latestComment?.author?.login?.toLowerCase();
+      const latestAt = latestComment?.createdAt ? new Date(latestComment.createdAt).getTime() : 0;
+
+      return latestAuthor === normalizedUsername && new Date().getTime() - latestAt >= tolerance;
+    });
+  } catch (err) {
+    context.logger.debug("Unable to inspect pull request review threads for task limit bypass.", { error: err as Error, owner, repo, pullNumber });
+    return false;
+  }
+}
+
 async function shouldSkipPullRequest(
   context: Context,
   pullRequest: Awaited<ReturnType<typeof getOpenedPullRequestsForUser>>[0],
@@ -260,9 +334,15 @@ async function shouldSkipPullRequest(
     return new Date().getTime() - referenceTime >= getTimeValue(reviewDelayTolerance);
   }
 
-  // If changes are requested, do not skip
+  // If changes are requested, only skip when all unresolved review threads are waiting on the PR author.
   if (Array.from(reviews.values()).some((review) => review.state === "CHANGES_REQUESTED")) {
-    return true;
+    return areUnresolvedReviewThreadsWaitingOnReviewer(context, {
+      owner,
+      repo,
+      pullNumber: pullRequest.number,
+      username: pullRequest.user?.login ?? "",
+      reviewDelayTolerance,
+    });
   }
 
   // If no approvals exist or time reference has exceeded review delay tolerance
