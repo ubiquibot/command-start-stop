@@ -1,5 +1,6 @@
 import { RestEndpointMethodTypes } from "@octokit/plugin-rest-endpoint-methods";
 import ms from "ms";
+import { QUERY_PULL_REQUEST_REVIEW_THREADS } from "../github-queries";
 import { Context } from "../types/context";
 import { AssignedIssue, GitHubIssueSearch, PrState, Review } from "../types/payload";
 import { AssignedIssueScope, Role } from "../types/plugin-input";
@@ -245,8 +246,13 @@ async function shouldSkipPullRequest(
   pullRequest: Awaited<ReturnType<typeof getOpenedPullRequestsForUser>>[0],
   reviews: Awaited<ReturnType<typeof getReviewByUser>>,
   { owner, repo, issueNumber }: { owner: string; repo: string; issueNumber: number },
-  reviewDelayTolerance: string
+  reviewDelayTolerance: string,
+  username: string
 ) {
+  if (await areReviewThreadsReviewerLagged(context, pullRequest, username, reviewDelayTolerance)) {
+    return true;
+  }
+
   const timeline = await context.octokit.paginate(context.octokit.rest.issues.listEventsForTimeline, {
     owner,
     repo,
@@ -292,7 +298,8 @@ export async function getPendingOpenedPullRequests(context: Context, username: s
       openedPullRequest,
       latestReviewsByUser,
       { owner, repo, issueNumber: openedPullRequest.number },
-      reviewDelayTolerance
+      reviewDelayTolerance,
+      username
     );
     if (!shouldSkipPr) {
       result.push(openedPullRequest);
@@ -314,4 +321,65 @@ export function getTimeValue(timeString: string): number {
 
 async function getOpenedPullRequestsForUser(context: Context, username: string): Promise<ReturnType<typeof getAllPullRequestsWithRetry>> {
   return getAllPullRequestsWithRetry(context, "open", username);
+}
+
+type ReviewThreadComment = {
+  author?: { login?: string | null } | null;
+  createdAt?: string | null;
+};
+
+type ReviewThread = {
+  isResolved?: boolean | null;
+  comments?: {
+    nodes?: (ReviewThreadComment | null)[] | null;
+  } | null;
+};
+
+async function areReviewThreadsReviewerLagged(
+  context: Context,
+  pullRequest: Awaited<ReturnType<typeof getOpenedPullRequestsForUser>>[0],
+  username: string,
+  reviewDelayTolerance: string
+): Promise<boolean> {
+  try {
+    const { owner, repo } = getOwnerRepoFromHtmlUrl(pullRequest.html_url);
+    const data = await context.octokit.graphql.paginate<{
+      repository?: {
+        pullRequest?: {
+          reviewThreads?: {
+            nodes?: (ReviewThread | null)[] | null;
+          } | null;
+        } | null;
+      } | null;
+    }>(QUERY_PULL_REQUEST_REVIEW_THREADS, {
+      owner,
+      repo,
+      pull_number: pullRequest.number,
+    });
+    const threads = data.repository?.pullRequest?.reviewThreads?.nodes?.filter((thread): thread is ReviewThread => !!thread && !thread.isResolved) ?? [];
+
+    if (!threads.length) {
+      return false;
+    }
+
+    const lagMs = getTimeValue(reviewDelayTolerance);
+    return threads.every((thread) => {
+      const latestComment = getLatestReviewThreadComment(thread);
+      if (!latestComment?.createdAt) {
+        return false;
+      }
+
+      const latestAuthor = latestComment.author?.login?.toLowerCase();
+      const lastCommentAge = new Date().getTime() - new Date(latestComment.createdAt).getTime();
+      return latestAuthor === username.toLowerCase() && lastCommentAge >= lagMs;
+    });
+  } catch (error) {
+    context.logger.debug("Review thread lag check failed; falling back to review status checks.", { error: error as Error });
+    return false;
+  }
+}
+
+function getLatestReviewThreadComment(thread: ReviewThread): ReviewThreadComment | null {
+  const comments = thread.comments?.nodes?.filter((comment): comment is ReviewThreadComment => !!comment && !!comment.createdAt) ?? [];
+  return comments.sort((a, b) => new Date(b.createdAt as string).getTime() - new Date(a.createdAt as string).getTime())[0] ?? null;
 }
