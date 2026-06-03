@@ -1,10 +1,35 @@
 import { RestEndpointMethodTypes } from "@octokit/plugin-rest-endpoint-methods";
 import ms from "ms";
+import { QUERY_PULL_REQUEST_REVIEW_THREADS } from "../github-queries";
 import { Context } from "../types/context";
 import { AssignedIssue, GitHubIssueSearch, PrState, Review } from "../types/payload";
 import { AssignedIssueScope, Role } from "../types/plugin-input";
 import { getOpenLinkedPullRequestsForIssue, GetLinkedResults } from "./get-linked-prs";
 import { getAllPullRequestsFallback, getAssignedIssuesFallback } from "./get-pull-requests-fallback";
+
+interface ReviewThreadLastComment {
+  author?: {
+    login?: string | null;
+  } | null;
+  createdAt?: string | null;
+}
+
+interface ReviewThreadNode {
+  isResolved?: boolean | null;
+  comments?: {
+    nodes?: (ReviewThreadLastComment | null)[] | null;
+  } | null;
+}
+
+interface PullRequestReviewThreadsQuery {
+  repository?: {
+    pullRequest?: {
+      reviewThreads?: {
+        nodes?: (ReviewThreadNode | null)[] | null;
+      } | null;
+    } | null;
+  } | null;
+}
 
 export function isParentIssue(body: string) {
   const parentPattern = /-\s+\[( |x)\]\s+#\d+/;
@@ -240,13 +265,61 @@ async function getReviewByUser(context: Context, pullRequest: Awaited<ReturnType
   return latestReviewsByUser;
 }
 
+function getLastReviewThreadComment(thread: ReviewThreadNode): ReviewThreadLastComment | null {
+  const comments = thread.comments?.nodes ?? [];
+  return comments[comments.length - 1] ?? null;
+}
+
+async function getUnresolvedReviewThreadLastComments(context: Context, pullNumber: number, owner: string, repo: string) {
+  try {
+    const reviewThreads = await context.octokit.graphql.paginate<PullRequestReviewThreadsQuery>(QUERY_PULL_REQUEST_REVIEW_THREADS, {
+      owner,
+      repo,
+      pull_number: pullNumber,
+    });
+    const threads = reviewThreads.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+    return threads.filter((thread): thread is ReviewThreadNode => !!thread && !thread.isResolved).map(getLastReviewThreadComment);
+  } catch (err) {
+    throw context.logger.error("Fetching pull request review threads failed!", { error: err as Error });
+  }
+}
+
+function areReviewThreadsWaitingOnReviewer(reviewThreadLastComments: (ReviewThreadLastComment | null)[], username: string, reviewDelayTolerance: string) {
+  if (!reviewThreadLastComments.length) {
+    return null;
+  }
+
+  const delayTolerance = getTimeValue(reviewDelayTolerance);
+  const normalizedUsername = username.toLowerCase();
+
+  return reviewThreadLastComments.every((comment) => {
+    const commentTime = comment?.createdAt ? new Date(comment.createdAt).getTime() : NaN;
+    return comment?.author?.login?.toLowerCase() === normalizedUsername && Number.isFinite(commentTime) && Date.now() - commentTime >= delayTolerance;
+  });
+}
+
 async function shouldSkipPullRequest(
   context: Context,
   pullRequest: Awaited<ReturnType<typeof getOpenedPullRequestsForUser>>[0],
   reviews: Awaited<ReturnType<typeof getReviewByUser>>,
   { owner, repo, issueNumber }: { owner: string; repo: string; issueNumber: number },
-  reviewDelayTolerance: string
+  reviewDelayTolerance: string,
+  username: string
 ) {
+  const reviewList = Array.from(reviews.values());
+  const hasChangesRequested = reviewList.some((review) => review.state === "CHANGES_REQUESTED");
+  const hasApproval = reviewList.some((review) => review.state === "APPROVED");
+
+  if (hasApproval && !hasChangesRequested) {
+    return true;
+  }
+
+  const reviewThreadLastComments = await getUnresolvedReviewThreadLastComments(context, pullRequest.number, owner, repo);
+  const isWaitingOnReviewer = areReviewThreadsWaitingOnReviewer(reviewThreadLastComments, username, reviewDelayTolerance);
+  if (isWaitingOnReviewer !== null) {
+    return !isWaitingOnReviewer;
+  }
+
   const timeline = await context.octokit.paginate(context.octokit.rest.issues.listEventsForTimeline, {
     owner,
     repo,
@@ -254,22 +327,20 @@ async function shouldSkipPullRequest(
   });
   const reviewEvent = timeline.filter((o) => o.event === "review_requested").pop();
   const referenceTime = reviewEvent && "created_at" in reviewEvent ? new Date(reviewEvent.created_at).getTime() : new Date(pullRequest.created_at).getTime();
+  const isTimePassed = Date.now() - referenceTime >= getTimeValue(reviewDelayTolerance);
 
   // If no reviews exist, check time reference
   if (reviews.size === 0) {
-    return new Date().getTime() - referenceTime >= getTimeValue(reviewDelayTolerance);
+    return !isTimePassed;
   }
 
   // If changes are requested, do not skip
-  if (Array.from(reviews.values()).some((review) => review.state === "CHANGES_REQUESTED")) {
+  if (hasChangesRequested) {
     return true;
   }
 
   // If no approvals exist or time reference has exceeded review delay tolerance
-  const hasApproval = Array.from(reviews.values()).some((review) => review.state === "APPROVED");
-  const isTimePassed = new Date().getTime() - referenceTime >= getTimeValue(reviewDelayTolerance);
-
-  return hasApproval || !isTimePassed;
+  return !isTimePassed;
 }
 
 /**
@@ -292,7 +363,8 @@ export async function getPendingOpenedPullRequests(context: Context, username: s
       openedPullRequest,
       latestReviewsByUser,
       { owner, repo, issueNumber: openedPullRequest.number },
-      reviewDelayTolerance
+      reviewDelayTolerance,
+      username
     );
     if (!shouldSkipPr) {
       result.push(openedPullRequest);

@@ -25,3 +25,29 @@ export const QUERY_OPEN_LINKED_PULL_REQUESTS_FOR_ISSUE = /* GraphQL */ `
     }
   }
 `;
+
+export const QUERY_PULL_REQUEST_REVIEW_THREADS = /* GraphQL */ `
+  query pullRequestReviewThreads($owner: String!, $repo: String!, $pull_number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pull_number) {
+        reviewThreads(first: 100, after: $cursor) {
+          nodes {
+            isResolved
+            comments(last: 1) {
+              nodes {
+                author {
+                  login
+                }
+                createdAt
+              }
+            }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+    }
+  }
+`;
