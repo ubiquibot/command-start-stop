@@ -137,6 +137,7 @@ async function createPullRequestEventContext(issue: Issue, sender: PayloadSender
   } as unknown as Context<"pull_request.edited">["payload"]["pull_request"];
   context.commentHandler = {
     postComment: jest.fn(async () => null),
+    createCommentBody: jest.fn((_ctx: unknown, log: any) => log?.logMessage?.diff || log?.logMessage?.raw || ""),
   } as unknown as Context["commentHandler"];
   return context;
 }
