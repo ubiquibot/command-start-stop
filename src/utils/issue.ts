@@ -1,5 +1,6 @@
 import { RestEndpointMethodTypes } from "@octokit/plugin-rest-endpoint-methods";
 import ms from "ms";
+import { QUERY_PULL_REQUEST_REVIEW_THREADS } from "../github-queries";
 import { Context } from "../types/context";
 import { AssignedIssue, GitHubIssueSearch, PrState, Review } from "../types/payload";
 import { AssignedIssueScope, Role } from "../types/plugin-input";
@@ -240,6 +241,81 @@ async function getReviewByUser(context: Context, pullRequest: Awaited<ReturnType
   return latestReviewsByUser;
 }
 
+async function isReviewerLagged(
+  context: Context,
+  {
+    owner,
+    repo,
+    pullNumber,
+    username,
+    reviewDelayTolerance,
+  }: { owner: string; repo: string; pullNumber: number; username: string; reviewDelayTolerance: string }
+): Promise<boolean> {
+  try {
+    const data = (await context.octokit.graphql.paginate(QUERY_PULL_REQUEST_REVIEW_THREADS, {
+      owner,
+      repo,
+      pull_number: pullNumber,
+    })) as {
+      repository?: {
+        pullRequest?: {
+          reviewThreads?: {
+            nodes?: Array<{
+              id: string;
+              isResolved: boolean;
+              isOutdated: boolean;
+              comments?: {
+                nodes?: Array<{
+                  author?: { login: string } | null;
+                  createdAt: string;
+                }>;
+              };
+            }>;
+          };
+        };
+      };
+    };
+
+    const threads = data?.repository?.pullRequest?.reviewThreads?.nodes || [];
+    const unresolvedThreads = threads.filter((t) => !t.isResolved && !t.isOutdated);
+
+    if (unresolvedThreads.length > 0) {
+      let allAuthoredByAssignee = true;
+      let mostRecentCommentTime = 0;
+
+      for (const thread of unresolvedThreads) {
+        const comments = thread.comments?.nodes || [];
+        const lastComment = comments.slice(-1)[0];
+        if (!lastComment || !lastComment.author?.login) {
+          allAuthoredByAssignee = false;
+          break;
+        }
+
+        if (lastComment.author.login.toLowerCase() !== username.toLowerCase()) {
+          allAuthoredByAssignee = false;
+          break;
+        }
+
+        const commentTime = new Date(lastComment.createdAt).getTime();
+        if (commentTime > mostRecentCommentTime) {
+          mostRecentCommentTime = commentTime;
+        }
+      }
+
+      if (allAuthoredByAssignee && mostRecentCommentTime > 0) {
+        const elapsed = Date.now() - mostRecentCommentTime;
+        if (elapsed >= getTimeValue(reviewDelayTolerance)) {
+          return true;
+        }
+      }
+    }
+  } catch (err) {
+    context.logger.debug("Failed to check reviewer lag on review threads", { error: err as Error });
+  }
+
+  return false;
+}
+
 async function shouldSkipPullRequest(
   context: Context,
   pullRequest: Awaited<ReturnType<typeof getOpenedPullRequestsForUser>>[0],
@@ -260,8 +336,20 @@ async function shouldSkipPullRequest(
     return new Date().getTime() - referenceTime >= getTimeValue(reviewDelayTolerance);
   }
 
-  // If changes are requested, do not skip
+  // If changes are requested, check if contributor addressed all threads and is reviewer-lagged
   if (Array.from(reviews.values()).some((review) => review.state === "CHANGES_REQUESTED")) {
+    const username = pullRequest.user?.login || "";
+    const isLagged = await isReviewerLagged(context, {
+      owner,
+      repo,
+      pullNumber: issueNumber,
+      username,
+      reviewDelayTolerance,
+    });
+    if (isLagged) {
+      // Contributor answered all comments > tolerance ago -> treat as waiting on reviewer (do not skip from quota offset)
+      return false;
+    }
     return true;
   }
 
